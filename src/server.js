@@ -22,11 +22,49 @@ app.use(express.json({ limit:'1mb' }));
 app.use('/api/auth/login', rateLimit({ windowMs: 15*60*1000, limit: 10, standardHeaders: 'draft-7', legacyHeaders: false }));
 
 const cleanUser = r => ({ uid:r.id, email:r.username, displayName:r.display_name, role:r.role, status:r.status, online:!!r.online, expiresAt:r.expires_at ? new Date(r.expires_at).toISOString() : undefined, createdAt:new Date(r.created_at).toISOString(), updatedAt:new Date(r.updated_at).toISOString() });
+
 async function init(){
- await pool.query(`CREATE TABLE IF NOT EXISTS td_users (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, display_name TEXT NOT NULL, role TEXT NOT NULL CHECK(role IN ('admin','operator')), status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','disabled')), online BOOLEAN NOT NULL DEFAULT FALSE, expires_at TIMESTAMPTZ NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
- const username=String(process.env.ADMIN_USERNAME||'admin').trim();
- const existing=await pool.query('SELECT id FROM td_users WHERE username=$1',[username]);
- if(!existing.rowCount){const hash=await bcrypt.hash(process.env.ADMIN_PASSWORD,12);await pool.query('INSERT INTO td_users(id,username,password_hash,display_name,role,status) VALUES($1,$2,$3,$4,\'admin\',\'active\')',[crypto.randomUUID(),username,hash,process.env.ADMIN_DISPLAY_NAME||'TEAM DUONG ADMIN']);}
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS td_users (
+      id TEXT PRIMARY KEY,
+      username TEXT NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      display_name TEXT NOT NULL,
+      role TEXT NOT NULL CHECK(role IN ('admin','operator')),
+      status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','disabled')),
+      online BOOLEAN NOT NULL DEFAULT FALSE,
+      expires_at TIMESTAMPTZ NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  const username = String(process.env.ADMIN_USERNAME || 'admin').trim();
+  const password = String(process.env.ADMIN_PASSWORD || '');
+  const displayName = process.env.ADMIN_DISPLAY_NAME || 'TEAM DUONG ADMIN';
+
+  const existing = await pool.query(
+    "SELECT id FROM td_users WHERE role='admin' ORDER BY created_at ASC LIMIT 1"
+  );
+
+  const hash = await bcrypt.hash(password, 12);
+
+  if (existing.rowCount) {
+    await pool.query(
+      `UPDATE td_users
+       SET username=$1, password_hash=$2, display_name=$3,
+           status='active', updated_at=NOW()
+       WHERE id=$4`,
+      [username, hash, displayName, existing.rows[0].id]
+    );
+  } else {
+    await pool.query(
+      `INSERT INTO td_users
+       (id, username, password_hash, display_name, role, status)
+       VALUES ($1,$2,$3,$4,'admin','active')`,
+      [crypto.randomUUID(), username, hash, displayName]
+    );
+  }
 }
 function auth(req,res,next){const h=req.headers.authorization||'';const token=h.startsWith('Bearer ')?h.slice(7):'';try{req.user=jwt.verify(token,process.env.JWT_SECRET);next()}catch{return res.status(401).json({error:'Phiên đăng nhập không hợp lệ hoặc đã hết hạn.'})}}
 function admin(req,res,next){if(req.user?.role!=='admin')return res.status(403).json({error:'Chỉ Admin mới được phép thực hiện.'});next()}
